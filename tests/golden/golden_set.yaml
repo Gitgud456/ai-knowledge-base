@@ -1,0 +1,37 @@
+# Hand-curated evaluation set.
+#
+# Goal: 100 items. Start with 10-20 you actually care about; grow over time.
+# Each item is a real question you'd ask the agent. `expected_sources` and
+# `expected_answer_contains` are optional but make scoring meaningful.
+#
+# Schema per item:
+#   id:                      stable handle (use slug — used in CI reports)
+#   question:                what you'd type
+#   expected_sources:        list of source_id substrings that *must* appear in citations
+#   expected_answer_contains:list of strings the answer *should* contain (case-insensitive)
+#   tags:                    free-form labels for slicing the report (e.g. ["security", "concept"])
+#   notes:                   anything for your future self
+#
+# Run with:  akb eval
+
+items:
+  - id: smoke-hello
+    question: hello
+    expected_sources: []
+    expected_answer_contains: []
+    tags: [smoke]
+    notes: Routes to "direct" (no retrieval). Sanity check for the router.
+
+  - id: smoke-vault-empty-topic
+    question: tell me about something completely unrelated to my vault
+    expected_sources: []
+    expected_answer_contains: []
+    tags: [smoke, robustness]
+    notes: The agent should admit it doesn't have material.
+
+  # Add your real questions below. Examples — replace with your topics:
+  # - id: sec-arp-spoofing
+  #   question: what notes do I have on ARP spoofing?
+  #   expected_sources: ["ARP"]
+  #   expected_answer_contains: ["ARP"]
+  #   tags: [security, network]

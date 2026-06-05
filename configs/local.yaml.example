@@ -1,0 +1,10 @@
+# Copy to configs/local.yaml for personal overrides. Gitignored.
+# Anything here overrides default.yaml.
+
+# Example: smaller batches on a low-RAM machine
+# embed:
+#   batch_size: 8
+#
+# retrieve:
+#   top_k: 5
+#   graph_expand: false

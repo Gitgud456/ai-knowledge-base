@@ -1,0 +1,38 @@
+# Secrets
+.env
+.env.local
+
+# Caches & build
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+build/
+dist/
+
+# Data + indexes
+chroma_db/
+qdrant_data/
+data/
+session_history.db
+ingest_state.db
+bm25.idx/
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
+
+# User-local artefacts (not part of the codebase)
+Ai/
+commands.txt
+temp_*
+*.pdf
+*.epub
+*.mp4
+
+# Streamlit cache
+.streamlit/

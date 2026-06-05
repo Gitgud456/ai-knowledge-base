@@ -1,0 +1,83 @@
+# All knobs in one place. Overridable per-env via configs/local.yaml or AKB_* env vars.
+# Nested env override syntax: AKB_RETRIEVE__N_RESULTS=20
+
+paths:
+  vault: ${OBSIDIAN_VAULT_PATH}
+  data_dir: ./data
+  qdrant_dir: ./data/qdrant
+  bm25_dir: ./data/bm25
+  session_db: ./data/session_history.db
+  ingest_state_db: ./data/ingest_state.db
+  prompts_dir: ./src/akb/prompts
+
+llm:
+  local_model: llama3:8b-instruct-q4_K_M     # ollama
+  context_model: llama3:8b-instruct-q4_K_M   # used by contextual retrieval (Phase 4)
+  deep_provider: gemini                       # 'gemini' | 'none'
+  gemini_model: gemini-1.5-flash
+  ollama_host: http://localhost:11434
+  temperature: 0.2
+  max_tokens: 2048
+
+embed:
+  model: BAAI/bge-m3
+  dim: 1024
+  normalize: true
+  batch_size: 32
+  use_sparse: true   # bge-m3 emits sparse too; enables hybrid
+
+ingest:
+  chunk_size: 1200
+  chunk_overlap: 200
+  headers_to_split:
+    - ["#", "h1"]
+    - ["##", "h2"]
+    - ["###", "h3"]
+    - ["####", "h4"]
+  batch_size: 64
+  semantic_chunker: false            # opt-in; expensive
+  contextual_retrieval: true         # Phase 4 on by default
+  late_chunking: false               # Phase 9 opt-in
+  skip_dirs: [".obsidian", ".trash", "templates", ".smart-env"]
+  attachment_dirs: ["attachments", "assets", "files"]
+
+retrieve:
+  n_results: 50          # first-stage hybrid candidates
+  top_k: 8               # after rerank
+  rrf_k: 60              # RRF constant
+  dense_weight: 1.0
+  sparse_weight: 1.0
+  use_reranker: true
+  reranker_model: BAAI/bge-reranker-v2-m3
+  reranker_top_n: 50
+  use_colbert_rerank: false   # Phase 9 opt-in; needs `pip install akb[late]`
+  graph_expand: true
+  graph_hops: 1
+  graph_expand_limit: 5
+
+agent:
+  framework: langgraph
+  enable_router: true
+  enable_critic: true       # CRAG-style reflect
+  enable_web_fallback: true
+  web_tool: duckduckgo      # 'duckduckgo' | 'tavily'
+  max_critic_iterations: 1
+  history_window: 8
+
+mentor:
+  initial_recall: 20
+  initial_top_k: 10
+  topic_recall: 10
+  topic_top_k: 5
+  history_window: 6
+
+eval:
+  golden_path: ./tests/golden/golden_set.yaml
+  judge_model: llama3:8b-instruct-q4_K_M
+  fail_on_regression_pct: 5.0
+
+obs:
+  log_level: INFO
+  json_logs: true
+  enable_tracing: false       # Phase 8 opt-in (langfuse)
+  langfuse_host: http://localhost:3000
