@@ -449,5 +449,107 @@ def schedule_run() -> None:
     console.print(f"[green]✓[/green] ran {res['ran']}, skipped {res['skipped']}")
 
 
+# --- Tier 3 opt-in features --------------------------------------------------
+
+raptor_app = typer.Typer(help="RAPTOR hierarchical summary index (opt-in).")
+app.add_typer(raptor_app, name="raptor")
+
+
+@raptor_app.command("build")
+def raptor_build() -> None:
+    """Cluster leaf chunks, summarise each cluster, repeat to build the tree."""
+    from akb.ingest.raptor import build_tree
+
+    with console.status("[cyan]Building RAPTOR tree (may take a while)…[/cyan]"):
+        stats = build_tree()
+    t = Table(title="RAPTOR")
+    t.add_column("metric", style="cyan")
+    t.add_column("value")
+    t.add_row("levels", str(stats.levels))
+    t.add_row("summaries_written", str(stats.summaries_written))
+    t.add_row("failed_summaries", str(stats.failed_summaries))
+    for i, n in enumerate(stats.per_level, 1):
+        t.add_row(f"level {i}", str(n))
+    console.print(t)
+
+
+@raptor_app.command("delete")
+def raptor_delete() -> None:
+    """Drop every RAPTOR summary node from the main collection."""
+    from akb.ingest.raptor import delete_tree
+
+    n = delete_tree()
+    console.print(f"[green]✓[/green] removed {n} summary chunks")
+
+
+communities_app = typer.Typer(help="Wikilink community summaries (light Graph-RAG, opt-in).")
+app.add_typer(communities_app, name="communities")
+
+
+@communities_app.command("build")
+def communities_build() -> None:
+    """Run Louvain on the wikilink graph and summarise each large community."""
+    from akb.ingest.communities import build_communities
+
+    with console.status("[cyan]Building community summaries…[/cyan]"):
+        stats = build_communities()
+    t = Table(title="Communities")
+    t.add_column("metric", style="cyan")
+    t.add_column("value")
+    t.add_row("found", str(stats.communities_found))
+    t.add_row("summarised", str(stats.summarised))
+    t.add_row("failed", str(stats.failed))
+    if stats.per_community_size:
+        t.add_row(
+            "avg size",
+            f"{sum(stats.per_community_size) / len(stats.per_community_size):.1f}",
+        )
+    console.print(t)
+
+
+@communities_app.command("delete")
+def communities_delete() -> None:
+    """Drop every community summary chunk from the main collection."""
+    from akb.ingest.communities import delete_communities
+
+    n = delete_communities()
+    console.print(f"[green]✓[/green] removed {n} community summaries")
+
+
+images_app = typer.Typer(help="SigLIP image search across vault images (opt-in).")
+app.add_typer(images_app, name="images")
+
+
+@images_app.command("ingest")
+def images_ingest() -> None:
+    """Embed every image referenced by a vault note into the image collection."""
+    from akb.ingest.image_loader import ingest_images
+
+    with console.status("[cyan]Discovering + embedding images…[/cyan]"):
+        n = ingest_images()
+    console.print(f"[green]✓[/green] {n} images upserted")
+
+
+@images_app.command("search")
+def images_search(
+    query: str = typer.Argument(..., help="Free-text query."),
+    top_k: int = typer.Option(8, "--k"),
+) -> None:
+    """Cross-modal text → image search."""
+    from akb.ingest.image_loader import search_images
+
+    hits = search_images(query, top_k=top_k)
+    if not hits:
+        console.print("[dim]no hits.[/dim]")
+        return
+    t = Table(title=f"image search: {query!r}")
+    t.add_column("score", style="cyan")
+    t.add_column("image")
+    t.add_column("note")
+    for h in hits:
+        t.add_row(f"{h.score:.3f}", h.image_path, h.note_path)
+    console.print(t)
+
+
 if __name__ == "__main__":
     app()

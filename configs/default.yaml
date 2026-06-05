@@ -96,3 +96,37 @@ obs:
   json_logs: true
   enable_tracing: false       # Phase 8 opt-in (langfuse)
   langfuse_host: http://localhost:3000
+
+# RAPTOR hierarchical summary index (opt-in)
+raptor:
+  enabled: false
+  max_levels: 3
+  min_cluster_size: 5
+  max_clusters_per_level: 64
+  umap_n_neighbors: 10
+  umap_dim: 8
+  summary_model: ""           # blank => use llm.local_model
+
+# SigLIP image search across vault images (opt-in; downloads ~700MB on first use)
+images:
+  enabled: false
+  model: google/siglip-base-patch16-224
+  batch_size: 16
+  embed_dim: 768
+  collection: vault_images
+
+# Speculative RAG: parallel drafters over disjoint context subsets + verifier (opt-in)
+speculative:
+  enabled: false
+  n_drafts: 3
+  chunks_per_draft: 3
+  drafter_model: ""
+  verifier_model: ""
+
+# Wikilink community summaries (light Graph-RAG, opt-in)
+communities:
+  enabled: false
+  min_community_size: 4
+  max_communities: 64
+  resolution: 1.0
+  summary_model: ""

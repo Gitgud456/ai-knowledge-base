@@ -22,6 +22,11 @@ class SourceType(str, Enum):
     txt = "txt"
     manual = "manual"
     web = "web"
+    # Synthesised nodes — RAPTOR summary clusters, vault images, wikilink
+    # communities. Different from leaves so retrieval can filter / weight them.
+    raptor = "raptor"
+    image = "image"
+    community = "community"
 
 
 class Document(BaseModel):

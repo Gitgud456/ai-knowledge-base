@@ -107,6 +107,9 @@ def _payload(chunk: Chunk) -> dict[str, Any]:
         "frontmatter_keys": chunk.metadata.get("frontmatter_keys", []),
         "created_at": chunk.metadata.get("created_at"),
         "modified_at": chunk.metadata.get("modified_at"),
+        # Synthesised-node metadata (RAPTOR / communities / images)
+        "level": chunk.metadata.get("level"),
+        "member_sources": chunk.metadata.get("member_sources", []),
     }
 
 
@@ -129,6 +132,8 @@ def _hydrate(payload: dict[str, Any]) -> Chunk:
             "frontmatter_keys": payload.get("frontmatter_keys", []),
             "created_at": payload.get("created_at"),
             "modified_at": payload.get("modified_at"),
+            "level": payload.get("level"),
+            "member_sources": payload.get("member_sources", []),
         },
     )
 

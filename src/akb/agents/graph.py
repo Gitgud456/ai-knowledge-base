@@ -191,14 +191,39 @@ def _critic(state: ChatState) -> ChatState:
     }
 
 
+def _split_context_into_chunks(context: str) -> list[str]:
+    """Split the assembled CONTEXT string back into its original ``\\n---\\n``
+    chunks so the speculative drafter can partition them."""
+    if not context:
+        return []
+    return [c.strip() for c in context.split("\n---\n") if c.strip()]
+
+
 def _finalize(state: ChatState) -> ChatState:
-    """Synchronous finalize used by ``invoke``. ``stream_answer`` calls
-    :func:`stream_finalize_messages` directly for token streaming."""
+    """Synchronous finalize used by ``invoke``. ``stream_answer`` streams
+    tokens for the same step.
+
+    Optionally routes through :func:`speculative.run_speculative` when
+    ``speculative.enabled`` — produces N parallel drafts on disjoint
+    context subsets, then a verifier picks the best.
+    """
     if state.get("dry_run"):
         return {**state, "final": _format_dry_run(state)}
     if state.get("cite_only"):
         return {**state, "final": _format_cite_only(state)}
     cfg = load_settings()
+    if cfg.speculative.enabled:
+        from akb.agents.speculative import run_speculative
+
+        context_chunks = _split_context_into_chunks(state.get("context", ""))
+        res = run_speculative(
+            query=state["query"],
+            context_chunks=context_chunks,
+            citations=state.get("citations", []),
+            cfg=cfg.speculative,
+        )
+        return {**state, "final": res.answer}
+
     messages = _final_messages(state, cfg)
     try:
         resp = ollama.chat(

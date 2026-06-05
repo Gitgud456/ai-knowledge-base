@@ -190,6 +190,48 @@ class ObsConfig(BaseModel):
     langfuse_host: str = "http://localhost:3000"
 
 
+class RaptorConfig(BaseModel):
+    """RAPTOR hierarchical-index settings (opt-in)."""
+
+    enabled: bool = False
+    max_levels: int = 3
+    min_cluster_size: int = 5
+    max_clusters_per_level: int = 64
+    umap_n_neighbors: int = 10
+    umap_dim: int = 8
+    summary_model: str = ""           # blank → fall back to llm.local_model
+
+
+class ImageConfig(BaseModel):
+    """SigLIP-based image search (opt-in)."""
+
+    enabled: bool = False
+    model: str = "google/siglip-base-patch16-224"
+    batch_size: int = 16
+    embed_dim: int = 768
+    collection: str = "vault_images"
+
+
+class SpeculativeConfig(BaseModel):
+    """Speculative RAG: parallel drafts + verifier (opt-in)."""
+
+    enabled: bool = False
+    n_drafts: int = 3
+    chunks_per_draft: int = 3
+    drafter_model: str = ""           # blank → fall back to llm.local_model
+    verifier_model: str = ""          # blank → fall back to llm.local_model
+
+
+class CommunitiesConfig(BaseModel):
+    """Wikilink community summaries — opt-in light Graph-RAG."""
+
+    enabled: bool = False
+    min_community_size: int = 4
+    max_communities: int = 64
+    resolution: float = 1.0           # Louvain resolution
+    summary_model: str = ""           # blank → fall back to llm.local_model
+
+
 class Settings(BaseSettings):
     """Top-level typed config. Override any nested field via env (`AKB_RETRIEVE__TOP_K=12`)."""
 
@@ -197,6 +239,10 @@ class Settings(BaseSettings):
     llm: LLMConfig = Field(default_factory=LLMConfig)
     embed: EmbedConfig = Field(default_factory=EmbedConfig)
     ingest: IngestConfig = Field(default_factory=IngestConfig)
+    raptor: RaptorConfig = Field(default_factory=RaptorConfig)
+    images: ImageConfig = Field(default_factory=ImageConfig)
+    speculative: SpeculativeConfig = Field(default_factory=SpeculativeConfig)
+    communities: CommunitiesConfig = Field(default_factory=CommunitiesConfig)
     retrieve: RetrieveConfig = Field(default_factory=RetrieveConfig)
     agent: AgentConfig = Field(default_factory=AgentConfig)
     mentor: MentorConfig = Field(default_factory=MentorConfig)
