@@ -32,10 +32,24 @@ def test_contextualizer_cache_miss_then_hit(
     monkeypatch: pytest.MonkeyPatch,
     fake_doc: Document,
 ) -> None:
+    """With ``context_batch_size=1`` each chunk gets its own LLM call (no batch)."""
     calls: list[str] = []
 
     def _fake_ollama_generate(**kwargs: Any) -> dict[str, str]:
         calls.append(kwargs["prompt"][:20])
+        # batch_size=1 still goes through _generate_batch (a 1-item batch)
+        # so the response must be the batched-JSON shape
+        prompt = kwargs["prompt"]
+        if "JSON object" in prompt:
+            import json
+            import re
+
+            ids = [int(s) for s in re.findall(r'<chunk id="(\d+)"', prompt)]
+            return {
+                "response": json.dumps(
+                    {"contexts": [{"id": i, "context": "CTX"} for i in ids]}
+                )
+            }
         return {"response": "CTX"}
 
     monkeypatch.setattr(cx.ollama, "generate", _fake_ollama_generate)
@@ -43,7 +57,7 @@ def test_contextualizer_cache_miss_then_hit(
     c = Contextualizer(
         cache_path=tmp_path / "ctx.db",
         llm_cfg=LLMConfig(context_model="llama3:8b-instruct-q4_K_M"),
-        ingest_cfg=IngestConfig(contextual_retrieval=True),
+        ingest_cfg=IngestConfig(contextual_retrieval=True, context_batch_size=1),
     )
 
     chunks = [_chunk("alpha", 0), _chunk("beta", 1)]
@@ -64,27 +78,36 @@ def test_contextualizer_survives_mid_doc_interrupt(
     monkeypatch: pytest.MonkeyPatch,
     fake_doc: Document,
 ) -> None:
-    """First pass: process chunk 0 OK, then raise on chunk 1. Second pass:
-    chunk 0 should be a cache hit (the autocommit-per-row contract)."""
+    """With ``context_batch_size=1``, an interrupt on chunk 2's call must leave
+    chunk 0's cache row durably persisted (the autocommit-per-row contract).
+    """
     state = {"call": 0}
 
     def _flaky(**kwargs: Any) -> dict[str, str]:
         state["call"] += 1
         if state["call"] == 2:
             raise RuntimeError("simulated interrupt")
-        return {"response": "CTX"}
+        # First call (chunk 0): well-formed JSON; the fallback would also see
+        # this if batch returned empty (which it won't for size=1 success).
+        import json
+        import re
+
+        ids = [int(s) for s in re.findall(r'<chunk id="(\d+)"', kwargs["prompt"])]
+        return {
+            "response": json.dumps({"contexts": [{"id": i, "context": "CTX"} for i in ids]})
+        }
 
     monkeypatch.setattr(cx.ollama, "generate", _flaky)
 
     c = Contextualizer(
         cache_path=tmp_path / "ctx.db",
         llm_cfg=LLMConfig(context_model="x"),
-        ingest_cfg=IngestConfig(contextual_retrieval=True),
+        ingest_cfg=IngestConfig(contextual_retrieval=True, context_batch_size=1),
     )
 
     chunks = [_chunk("alpha", 0), _chunk("beta", 1)]
     c.contextualize(fake_doc, chunks)
-    # chunk 0 got CTX; chunk 1 generation raised, _generate caught it and returned ""
+    # chunk 0 got CTX; chunk 1 generation raised, fallback returned "" → no context
     assert chunks[0].contextualized_text and chunks[0].contextualized_text.startswith("CTX")
 
     # New contextualizer (simulates next process); chunk 0 must come from cache
@@ -92,13 +115,19 @@ def test_contextualizer_survives_mid_doc_interrupt(
 
     def _ok(**kwargs: Any) -> dict[str, str]:
         state["call"] += 1
-        return {"response": "CTX2"}
+        import json
+        import re
+
+        ids = [int(s) for s in re.findall(r'<chunk id="(\d+)"', kwargs["prompt"])]
+        return {
+            "response": json.dumps({"contexts": [{"id": i, "context": "CTX2"} for i in ids]})
+        }
 
     monkeypatch.setattr(cx.ollama, "generate", _ok)
     c2 = Contextualizer(
         cache_path=tmp_path / "ctx.db",
         llm_cfg=LLMConfig(context_model="x"),
-        ingest_cfg=IngestConfig(contextual_retrieval=True),
+        ingest_cfg=IngestConfig(contextual_retrieval=True, context_batch_size=1),
     )
     chunks2 = [_chunk("alpha", 0), _chunk("beta", 1)]
     c2.contextualize(fake_doc, chunks2)

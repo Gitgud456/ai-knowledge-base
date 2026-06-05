@@ -106,6 +106,10 @@ def chunk_document(
                         "title": doc.title,
                         "aliases": list(doc.aliases),
                         "frontmatter_keys": list(doc.frontmatter.keys()),
+                        # Timestamps for recency-weighted rerank. ISO-8601 strings
+                        # because Qdrant payload doesn't take datetime objects.
+                        "created_at": doc.created_at.isoformat() if doc.created_at else None,
+                        "modified_at": doc.modified_at.isoformat() if doc.modified_at else None,
                     },
                 )
             )

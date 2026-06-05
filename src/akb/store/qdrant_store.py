@@ -54,9 +54,24 @@ def _client(qdrant_dir: Path) -> QdrantClient:
     return QdrantClient(path=str(qdrant_dir))
 
 
-def _vectors_config(dim: int) -> dict[str, models.VectorParams]:
+def _vectors_config(
+    dim: int, binary_quant: bool = False
+) -> dict[str, models.VectorParams]:
+    quantization = None
+    if binary_quant:
+        try:
+            quantization = models.BinaryQuantization(
+                binary=models.BinaryQuantizationConfig(always_ram=True)
+            )
+        except Exception:
+            # Older qdrant-client: skip silently; we'll warn at collection-create time.
+            quantization = None
     return {
-        DENSE_NAME: models.VectorParams(size=dim, distance=models.Distance.COSINE),
+        DENSE_NAME: models.VectorParams(
+            size=dim,
+            distance=models.Distance.COSINE,
+            quantization_config=quantization,
+        ),
     }
 
 
@@ -90,6 +105,8 @@ def _payload(chunk: Chunk) -> dict[str, Any]:
         "title": chunk.metadata.get("title"),
         "aliases": chunk.metadata.get("aliases", []),
         "frontmatter_keys": chunk.metadata.get("frontmatter_keys", []),
+        "created_at": chunk.metadata.get("created_at"),
+        "modified_at": chunk.metadata.get("modified_at"),
     }
 
 
@@ -110,6 +127,8 @@ def _hydrate(payload: dict[str, Any]) -> Chunk:
             "title": payload.get("title"),
             "aliases": payload.get("aliases", []),
             "frontmatter_keys": payload.get("frontmatter_keys", []),
+            "created_at": payload.get("created_at"),
+            "modified_at": payload.get("modified_at"),
         },
     )
 
@@ -164,7 +183,10 @@ class QdrantStore:
             return
         kwargs: dict[str, Any] = {
             "collection_name": COLLECTION,
-            "vectors_config": _vectors_config(self._embed_cfg.dim),
+            "vectors_config": _vectors_config(
+                self._embed_cfg.dim,
+                binary_quant=self._embed_cfg.binary_quantization,
+            ),
         }
         if self._embed_cfg.use_sparse:
             kwargs["sparse_vectors_config"] = _sparse_vectors_config()
@@ -241,12 +263,26 @@ class QdrantStore:
         where: models.Filter | None = None,
         rrf_k: int = 60,
     ) -> list[RetrievedChunk]:
+        search_params = None
+        if self._embed_cfg.binary_quantization:
+            try:
+                search_params = models.SearchParams(
+                    quantization=models.QuantizationSearchParams(
+                        ignore=False,
+                        rescore=True,
+                        oversampling=self._embed_cfg.binary_oversampling,
+                    )
+                )
+            except Exception:
+                search_params = None
+
         prefetch: list[models.Prefetch] = [
             models.Prefetch(
                 query=dense_vec,
                 using=DENSE_NAME,
                 limit=n_results,
                 filter=where,
+                params=search_params,
             )
         ]
         if sparse_vec and self._embed_cfg.use_sparse and sparse_vec.indices:

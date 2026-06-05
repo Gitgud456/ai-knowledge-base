@@ -1,22 +1,31 @@
 """Streamlit shell on top of the new ``akb`` package.
 
-Same 4-tab shape as the legacy UI (Chat / Mentor / Knowledge Graph / Settings),
-but every internal call now goes through:
-  * ``akb.agents.graph.ChatAgent`` (LangGraph router + CRAG)
-  * ``akb.agents.mentor`` (plan + lesson + QA)
-  * ``akb.ingest.sync`` (incremental, hash-keyed)
-  * ``akb.store.qdrant_store`` (Qdrant embedded, hybrid)
+Tabs:
+  * **Chat** — token streaming, "why this answer" reasoning expander, slash
+    commands, ``[[Note]]`` sticky context, citations with one-click
+    "save as note" and "export chat", a backlinks panel under each answer.
+  * **Mentor** — plan + lessons + Q/A (uses ``MentorState.commit_reply``).
+  * **Knowledge Graph** — wikilink-based, seeded from any vault note.
+  * **Settings** — resolved config (read-only).
 
 Run: ``akb serve`` (or ``streamlit run src/akb/ui/app.py``).
 """
 
 from __future__ import annotations
 
+import re
+from datetime import datetime
+from pathlib import Path
+
 import streamlit as st
 
-from akb.agents.graph import ChatAgent
+from akb.agents.graph import ChatAgent, StreamEvent
 from akb.agents.mentor import continue_session, parse_plan, start_session
+from akb.agents.slash import HELP_TEXT, parse as parse_slash
+from akb.cli_ops import export_session
 from akb.config import load_settings
+from akb.ingest.graph import VaultGraph, build_graph
+from akb.ingest.obsidian_loader import iter_vault
 from akb.ingest.sync import apply_sync, plan_sync
 from akb.obs.logging import configure_logging
 from akb.sessions.db import (
@@ -31,11 +40,7 @@ from akb.store.qdrant_store import get_store
 
 configure_logging()
 st.set_page_config(page_title="akb · AI Knowledge Base", layout="wide")
-
-
-@st.cache_resource
-def _agent() -> ChatAgent:
-    return ChatAgent()
+settings = load_settings()
 
 
 @st.cache_resource
@@ -43,14 +48,29 @@ def _store_handle():
     return get_store()
 
 
-init_history_db()
-settings = load_settings()
+@st.cache_resource
+def _vault_graph() -> VaultGraph:
+    """Cache the wikilink graph for the session. Refresh via the sidebar button."""
+    docs = list(iter_vault())
+    return build_graph(docs)
 
-# --- session-state defaults -----------------------------------------------
+
+@st.cache_resource
+def _agent(_graph_hash: int) -> ChatAgent:
+    # ``_graph_hash`` participates in the cache key so a "refresh graph" click
+    # in the sidebar gives us a fresh agent bound to the new graph.
+    return ChatAgent(graph=_vault_graph(), store=_store_handle())
+
+
+init_history_db()
+
 ss = st.session_state
 ss.setdefault("chat_session_id", None)
 ss.setdefault("mentor_session_id", None)
 ss.setdefault("mentor_state", None)
+ss.setdefault("last_reasoning", None)
+ss.setdefault("last_citations", [])
+ss.setdefault("graph_epoch", 0)
 
 # --- sidebar ---------------------------------------------------------------
 with st.sidebar:
@@ -73,9 +93,9 @@ with st.sidebar:
     saved = list_sessions()
     if saved:
         opts = {f"{s['name']} (id={s['id']})": int(s["id"]) for s in saved}
-        chosen = st.selectbox("Load / delete", [""] + list(opts.keys()))
-        col_a, col_b = st.columns(2)
-        with col_a:
+        chosen = st.selectbox("Load / delete / export", [""] + list(opts.keys()))
+        cols = st.columns(3)
+        with cols[0]:
             if st.button("Load") and chosen:
                 sid = opts[chosen]
                 if "Mentor:" in chosen:
@@ -86,7 +106,14 @@ with st.sidebar:
                     ss.chat_session_id = sid
                     ss.mentor_session_id = None
                 st.rerun()
-        with col_b:
+        with cols[1]:
+            if st.button("Export") and chosen:
+                try:
+                    out = export_session(opts[chosen])
+                    st.success(f"wrote {out}")
+                except Exception as e:
+                    st.error(str(e))
+        with cols[2]:
             if st.button("Delete", type="primary") and chosen:
                 delete_session(opts[chosen])
                 st.rerun()
@@ -104,6 +131,9 @@ with st.sidebar:
             res = apply_sync(ss["_pending_plan"])
         st.success(f"+{res['upserts']} chunks, -{res['deletes']} sources")
         ss.pop("_pending_plan", None)
+        ss.graph_epoch += 1  # invalidate cached vault graph
+        _vault_graph.clear()  # type: ignore[attr-defined]
+        _agent.clear()  # type: ignore[attr-defined]
 
     st.divider()
     st.subheader("Index")
@@ -112,15 +142,44 @@ with st.sidebar:
             st.info(f"points in collection: {_store_handle().count()}")
         except Exception as e:
             st.error(f"qdrant error: {e}")
+    if st.button("Refresh vault graph"):
+        _vault_graph.clear()  # type: ignore[attr-defined]
+        _agent.clear()  # type: ignore[attr-defined]
+        ss.graph_epoch += 1
+        st.success("graph + agent caches cleared")
 
 # --- tabs ------------------------------------------------------------------
 tab_chat, tab_mentor, tab_graph, tab_settings = st.tabs(
     ["Chat", "Mentor", "Knowledge Graph", "Settings"]
 )
 
+
+def _save_snippet(citation_source: str, snippet: str) -> Path:
+    target = settings.paths.vault / "akb_snippets"
+    target.mkdir(parents=True, exist_ok=True)
+    slug = re.sub(r"[^A-Za-z0-9-_]+", "-", citation_source)[:60] or "snippet"
+    fname = f"{datetime.now().strftime('%Y%m%d%H%M%S')}-{slug}.md"
+    body = (
+        "---\n"
+        f"source: {citation_source}\n"
+        "tags: [akb/snippet]\n"
+        "---\n\n"
+        f"From [[{Path(citation_source).stem if citation_source.endswith('.md') else citation_source}]]:\n\n"
+        f"> {snippet}\n"
+    )
+    out = target / fname
+    out.write_text(body, encoding="utf-8")
+    return out
+
+
 # --------- Chat
 with tab_chat:
-    st.header("Chat (LangGraph router + CRAG)")
+    st.header("Chat")
+    st.caption(
+        "Stream answer · `/help` for slash commands · "
+        "`[[Note]]` to pin a note's chunks into context"
+    )
+
     if ss.chat_session_id is None:
         st.info("Start or load a chat session from the sidebar.")
     else:
@@ -128,25 +187,85 @@ with tab_chat:
         for m in history:
             with st.chat_message(m["role"]):
                 st.markdown(m["content"])
-        prompt = st.chat_input("Ask your knowledge base…")
+        # Reasoning panel for the most recent answer
+        if ss.last_reasoning:
+            with st.expander("why this answer (last turn)"):
+                st.json(ss.last_reasoning)
+        # Related-notes panel (1-hop wikilinks of cited sources)
+        if ss.last_citations:
+            graph = _vault_graph()
+            related: set[str] = set()
+            for c in ss.last_citations[:5]:
+                related |= graph.neighbours(c.source_id, hops=1)
+            related -= {c.source_id for c in ss.last_citations}
+            if related:
+                with st.expander(f"related notes ({len(related)})"):
+                    for sid in sorted(related)[:20]:
+                        st.markdown(f"- `{sid}`")
+
+        prompt = st.chat_input("Ask, or /help…")
         if prompt:
-            add_message_to_session(ss.chat_session_id, "user", prompt)
-            with st.chat_message("user"):
-                st.markdown(prompt)
-            with st.chat_message("assistant"):
-                with st.spinner("Thinking…"):
-                    ans = _agent().invoke(prompt, history=history)
-                st.markdown(ans.text)
-                if ans.citations:
-                    with st.expander("sources"):
-                        for c in ans.citations[:8]:
-                            st.markdown(f"- `{c.source_id}` (score={c.score:.3f})\n  > {c.snippet}")
-            add_message_to_session(ss.chat_session_id, "assistant", ans.text)
-            st.rerun()
+            sc = parse_slash(prompt)
+            if sc.show_help:
+                with st.chat_message("assistant"):
+                    st.markdown(f"```\n{HELP_TEXT}\n```")
+            else:
+                add_message_to_session(ss.chat_session_id, "user", prompt)
+                with st.chat_message("user"):
+                    st.markdown(prompt)
+                with st.chat_message("assistant"):
+                    holder = st.empty()
+                    buf = ""
+                    final_state = None
+                    answer = None
+                    for evt in _agent(ss.graph_epoch).stream_answer(
+                        sc.query or prompt,
+                        history=history,
+                        force_path=sc.force_path,
+                        cite_only=sc.cite_only,
+                        dry_run=sc.dry_run,
+                    ):
+                        if evt.kind == "state":
+                            final_state = evt.state
+                        elif evt.kind == "token":
+                            buf += evt.token
+                            holder.markdown(buf + "▌")
+                        elif evt.kind == "done":
+                            answer = evt.answer
+                            holder.markdown(buf or (answer.text if answer else ""))
+                    if answer is not None:
+                        # Stash reasoning + citations for the next render
+                        ss.last_reasoning = {
+                            "path": final_state.get("path") if final_state else None,
+                            "iterations": final_state.get("iterations") if final_state else 0,
+                            "critic_verdict": final_state.get("critic_verdict") if final_state else None,
+                            "critic_notes": final_state.get("critic_notes") if final_state else "",
+                            "improved_query": final_state.get("improved_query") if final_state else "",
+                            "pinned_titles": final_state.get("pinned_titles") if final_state else [],
+                            "cite_only": bool(final_state.get("cite_only")) if final_state else False,
+                            "dry_run": bool(final_state.get("dry_run")) if final_state else False,
+                        }
+                        ss.last_citations = answer.citations or []
+                        if answer.citations:
+                            with st.expander(f"sources ({len(answer.citations)})"):
+                                for i, c in enumerate(answer.citations[:8]):
+                                    cc = st.columns([5, 1])
+                                    with cc[0]:
+                                        st.markdown(
+                                            f"- `{c.source_id}` (score={c.score:.3f})\n  > {c.snippet}"
+                                        )
+                                    with cc[1]:
+                                        if st.button("save", key=f"save-{i}-{c.chunk_id}"):
+                                            out = _save_snippet(c.source_id, c.snippet)
+                                            st.success(out.name)
+                        add_message_to_session(
+                            ss.chat_session_id, "assistant", answer.text or buf
+                        )
+                st.rerun()
 
 # --------- Mentor
 with tab_mentor:
-    st.header("Mentor (plan + lessons + QA)")
+    st.header("Mentor")
     if ss.mentor_session_id is None:
         topic = st.text_input("What do you want to master?")
         if st.button("Start mentoring") and topic:
@@ -157,7 +276,7 @@ with tab_mentor:
                 for chunk in stream:
                     buf += chunk
             ms.plan = parse_plan(buf)
-            ms.commit_reply(buf)  # keep history so the next turn has continuity
+            ms.commit_reply(buf)
             ss.mentor_state = ms
             add_message_to_session(ss.mentor_session_id, "user", f"Master: {topic}")
             add_message_to_session(ss.mentor_session_id, "assistant", buf)
@@ -187,21 +306,20 @@ with tab_mentor:
             add_message_to_session(ss.mentor_session_id, "assistant", buf)
             st.rerun()
 
-# --------- Knowledge Graph (real wikilink graph from the vault)
+# --------- Knowledge Graph
 with tab_graph:
     st.header("Knowledge Graph (wikilink-based)")
     from streamlit_agraph import Config, Edge, Node, agraph
-
-    from akb.ingest.graph import build_graph
-    from akb.ingest.obsidian_loader import iter_vault
 
     seed = st.text_input("Seed note title (case-insensitive)")
     hops = st.slider("hops", 1, 3, 1)
     if st.button("Build graph") and seed:
         with st.spinner("Walking vault…"):
-            docs = list(iter_vault())
-            g = build_graph(docs)
-        target_sid = g.title_to_source.get(seed.strip().lower())
+            g = _vault_graph()
+        import unicodedata
+
+        key = unicodedata.normalize("NFC", seed.strip()).casefold()
+        target_sid = g.title_to_source.get(key)
         if not target_sid:
             st.warning("Note not found by title or alias.")
         else:
@@ -218,7 +336,7 @@ with tab_graph:
                 config=Config(width=1100, height=720, directed=True, physics=True),
             )
 
-# --------- Settings (read-only display; edits via configs/local.yaml)
+# --------- Settings
 with tab_settings:
     st.header("Settings (resolved)")
     st.caption("Edit `configs/local.yaml` to override defaults, or set `AKB_*` env vars.")

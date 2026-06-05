@@ -10,10 +10,16 @@ We expose two layers:
 
 The reranker is a *pure* function over ``RetrievedChunk`` lists: it does not
 re-fetch anything from Qdrant; it only re-scores and re-orders.
+
+Recency weighting (opt-in via config) multiplies the cross-encoder score by
+``exp(-age_days / half_life_days)`` so an older note has to be significantly
+more semantically relevant to outrank a recent one.
 """
 
 from __future__ import annotations
 
+import math
+from datetime import datetime, timezone
 from functools import lru_cache
 from typing import Protocol
 
@@ -53,6 +59,45 @@ def get_reranker() -> Reranker:
     return _BgeReranker(cfg.reranker_model)
 
 
+def _age_days(rc: RetrievedChunk, now: datetime) -> float | None:
+    """Best-effort chunk age in days. Returns None if no timestamp is available."""
+    ts = rc.chunk.metadata.get("modified_at") or rc.chunk.metadata.get("created_at")
+    if not isinstance(ts, str):
+        return None
+    try:
+        dt = datetime.fromisoformat(ts)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    delta = now - dt
+    return max(delta.total_seconds() / 86400.0, 0.0)
+
+
+def _apply_recency(
+    candidates: list[RetrievedChunk],
+    weight: float,
+    half_life_days: float,
+) -> None:
+    """Mutate ``rerank_score`` in place with a recency multiplier.
+
+    ``weight`` interpolates between "no recency effect" (0.0) and "full decay"
+    (1.0). Chunks without a usable timestamp keep their score unchanged.
+    """
+    if weight <= 0.0 or half_life_days <= 0.0:
+        return
+    now = datetime.now(timezone.utc)
+    decay_k = math.log(2) / half_life_days
+    for rc in candidates:
+        age = _age_days(rc, now)
+        if age is None or rc.rerank_score is None:
+            continue
+        decay = math.exp(-decay_k * age)
+        # weight=0 -> 1.0 (no effect); weight=1 -> full decay
+        mult = (1.0 - weight) + weight * decay
+        rc.rerank_score = rc.rerank_score * mult
+
+
 def rerank(
     query: str,
     candidates: list[RetrievedChunk],
@@ -80,6 +125,8 @@ def rerank(
     scores = reranker.score(query, texts)
     for rc, s in zip(pool, scores):
         rc.rerank_score = s
+
+    _apply_recency(pool, cfg.recency_weight, cfg.recency_half_life_days)
 
     pool.sort(key=lambda rc: rc.rerank_score or 0.0, reverse=True)
     final = pool + rest

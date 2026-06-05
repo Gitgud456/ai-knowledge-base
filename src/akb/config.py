@@ -103,6 +103,11 @@ class EmbedConfig(BaseModel):
     normalize: bool = True
     batch_size: int = 32
     use_sparse: bool = True
+    # Binary quantization in Qdrant: ~32x smaller, ~40x faster, with
+    # oversampling=2 + rescore the recall loss is typically <1 point.
+    # Toggling this requires rebuilding the collection (drop + reindex).
+    binary_quantization: bool = False
+    binary_oversampling: float = 2.0
 
 
 class IngestConfig(BaseModel):
@@ -114,9 +119,17 @@ class IngestConfig(BaseModel):
     batch_size: int = 64
     semantic_chunker: bool = False
     contextual_retrieval: bool = True
+    # How many chunks per Ollama call in contextualizer batch mode. ~8-16 is the
+    # sweet spot for an 8B model — bigger batches drop output quality, smaller
+    # ones lose the speedup.
+    context_batch_size: int = 8
     late_chunking: bool = False
     skip_dirs: list[str] = Field(default_factory=lambda: [".obsidian", ".trash"])
     attachment_dirs: list[str] = Field(default_factory=lambda: ["attachments"])
+    # Secret scrubbing: drop chunks (or warn) that look like leaked credentials.
+    # 'block' deletes the chunk entirely, 'redact' replaces the secret in-place,
+    # 'warn' logs and lets it through, 'off' disables scanning.
+    scrub_secrets: str = "redact"
 
 
 class RetrieveConfig(BaseModel):
@@ -132,6 +145,11 @@ class RetrieveConfig(BaseModel):
     graph_expand: bool = True
     graph_hops: int = 1
     graph_expand_limit: int = 5
+    # Recency weighting: multiplies rerank score by exp(-age_days/half_life).
+    # 0.0 disables. half_life of 180d => a 6-month-old note keeps ~50% of its
+    # rerank score relative to today's. Higher weights bias harder to recent.
+    recency_weight: float = 0.0
+    recency_half_life_days: float = 180.0
 
 
 class AgentConfig(BaseModel):

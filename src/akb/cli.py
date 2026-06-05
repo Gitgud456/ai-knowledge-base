@@ -18,6 +18,7 @@ from rich.console import Console
 from rich.table import Table
 
 from akb import __version__
+from akb.cli_ops import doctor_checks, export_session, gather_stats
 from akb.config import load_settings
 from akb.obs.logging import configure_logging
 
@@ -148,12 +149,18 @@ def reindex(
 
 @app.command()
 def chat() -> None:
-    """Interactive REPL chat with the LangGraph agent."""
+    """Interactive REPL chat with the LangGraph agent.
+
+    Slash commands work inline: ``/search foo``, ``/web foo``, ``/cite foo``,
+    ``/dry-run foo``, ``/help``. Wikilinks like ``[[Note]] what's left?`` pin
+    that note's chunks into the agent's context.
+    """
     from akb.agents.graph import ChatAgent
+    from akb.agents.slash import HELP_TEXT, parse as parse_slash
 
     agent = ChatAgent()
     history: list[dict[str, str]] = []
-    console.print("[bold cyan]akb chat[/bold cyan] — Ctrl-C or `:q` to exit\n")
+    console.print("[bold cyan]akb chat[/bold cyan] — Ctrl-C or `:q` to exit; `/help` for slash commands\n")
     while True:
         try:
             user = console.input("[bold green]you[/bold green] ▸ ")
@@ -164,14 +171,34 @@ def chat() -> None:
             return
         if not user.strip():
             continue
+        sc = parse_slash(user)
+        if sc.show_help:
+            console.print(HELP_TEXT)
+            continue
         history.append({"role": "user", "content": user})
-        ans = agent.invoke(user, history=history)
-        history.append({"role": "assistant", "content": ans.text})
-        console.print(f"\n[bold magenta]akb[/bold magenta] ▸ {ans.text}\n")
-        if ans.citations:
-            console.print("[dim]sources:[/dim]")
-            for c in ans.citations[:5]:
-                console.print(f"  [dim]- {c.source_id} (score={c.score:.3f})[/dim]")
+
+        # Stream tokens for the actual answer
+        console.print("\n[bold magenta]akb[/bold magenta] ▸ ", end="")
+        final_text = ""
+        from akb.agents.graph import StreamEvent  # avoid top-level circular
+
+        for evt in agent.stream_answer(
+            sc.query or user,
+            history=history,
+            force_path=sc.force_path,
+            cite_only=sc.cite_only,
+            dry_run=sc.dry_run,
+        ):
+            if evt.kind == "token":
+                console.print(evt.token, end="")
+                final_text += evt.token
+            elif evt.kind == "done" and evt.answer is not None:
+                history.append({"role": "assistant", "content": evt.answer.text or final_text})
+                if evt.answer.citations:
+                    console.print("\n\n[dim]sources:[/dim]")
+                    for c in evt.answer.citations[:5]:
+                        console.print(f"  [dim]- {c.source_id} (score={c.score:.3f})[/dim]")
+        console.print()
 
 
 @app.command(name="eval")
@@ -218,6 +245,55 @@ def serve(
         [sys.executable, "-m", "streamlit", "run", str(ui_path), "--server.port", str(port)],
         check=False,
     )
+
+
+@app.command()
+def doctor() -> None:
+    """Preflight checks: Ollama reachable, model weights cached, vault + paths OK."""
+    report = doctor_checks()
+    t = Table(title="akb doctor")
+    t.add_column("check", style="cyan")
+    t.add_column("status", justify="center")
+    t.add_column("detail", style="white")
+    for c in report.checks:
+        status = "[green]ok[/green]" if c.ok else "[red]fail[/red]"
+        t.add_row(c.name, status, c.detail)
+    console.print(t)
+    if not report.healthy:
+        raise typer.Exit(code=1)
+
+
+@app.command()
+def stats() -> None:
+    """Index size, sources by type, cache rows, ingest_state vs Qdrant drift."""
+    s = gather_stats()
+    t = Table(title="akb stats")
+    t.add_column("metric", style="cyan")
+    t.add_column("value", style="white")
+    t.add_row("qdrant.points", str(s.qdrant_points))
+    t.add_row("qdrant.sources", str(s.qdrant_sources))
+    t.add_row("ingest_state.sources", str(s.ingest_state_sources))
+    t.add_row("ingest_state.chunks", str(s.ingest_state_chunks))
+    t.add_row("drift (qdrant vs state)", str(s.drift))
+    t.add_row("context_cache.rows", str(s.context_cache_rows))
+    t.add_row("sessions", str(s.session_count))
+    for st, n in sorted(s.by_source_type.items()):
+        t.add_row(f"by_source_type:{st}", str(n))
+    console.print(t)
+
+
+@app.command(name="export-chat")
+def export_chat(
+    session_id: int = typer.Argument(..., help="Session ID (see `akb info` / Streamlit sidebar)."),
+    out_dir: Path = typer.Option(None, "--out", help="Override output directory."),
+) -> None:
+    """Export a saved chat session as a markdown note in {vault}/akb_chats/."""
+    try:
+        path = export_session(session_id, out_dir=out_dir)
+    except ValueError as e:
+        console.print(f"[red]error:[/red] {e}")
+        raise typer.Exit(code=1)
+    console.print(f"[green]✓[/green] wrote {path}")
 
 
 if __name__ == "__main__":

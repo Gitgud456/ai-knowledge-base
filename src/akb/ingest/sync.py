@@ -27,6 +27,7 @@ from akb.ingest.chunkers import chunk_document
 from akb.ingest.contextualizer import Contextualizer
 from akb.ingest.dedupe import dedupe_chunks
 from akb.ingest.obsidian_loader import _build_index, load_note  # internal but stable
+from akb.ingest.scrubber import scrub_chunks
 from akb.ingest.upsert import upsert_chunks
 from akb.obs.logging import get_logger
 from akb.schemas import Document
@@ -158,6 +159,7 @@ def apply_sync(
 
         doc = _doc_for_path(path, vault, index)
         chunks = chunk_document(doc)
+        chunks = scrub_chunks(chunks)
         if ctx is not None:
             chunks = ctx.contextualize(doc, chunks)
         chunks = dedupe_chunks(chunks)

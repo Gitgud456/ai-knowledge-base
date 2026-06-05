@@ -25,6 +25,9 @@ embed:
   normalize: true
   batch_size: 32
   use_sparse: true   # bge-m3 emits sparse too; enables hybrid
+  # Binary quantization: 1-bit dense vectors. Drop + reindex required when toggled.
+  binary_quantization: false
+  binary_oversampling: 2.0
 
 ingest:
   chunk_size: 1200
@@ -37,9 +40,11 @@ ingest:
   batch_size: 64
   semantic_chunker: false            # opt-in; expensive
   contextual_retrieval: true         # Phase 4 on by default
+  context_batch_size: 8              # chunks per Ollama call in contextualizer
   late_chunking: false               # Phase 9 opt-in
   skip_dirs: [".obsidian", ".trash", "templates", ".smart-env"]
   attachment_dirs: ["attachments", "assets", "files"]
+  scrub_secrets: redact              # 'block' | 'redact' | 'warn' | 'off'
 
 retrieve:
   n_results: 50          # first-stage hybrid candidates
@@ -51,6 +56,10 @@ retrieve:
   reranker_model: BAAI/bge-reranker-v2-m3
   reranker_top_n: 50
   use_colbert_rerank: false   # Phase 9 opt-in; needs `pip install akb[late]`
+  # Recency-weighted rerank: rerank_score *= exp(-age_days / half_life_days).
+  # 0.0 = off (pure semantic). 1.0 = full decay applied.
+  recency_weight: 0.0
+  recency_half_life_days: 180
   graph_expand: true
   graph_hops: 1
   graph_expand_limit: 5

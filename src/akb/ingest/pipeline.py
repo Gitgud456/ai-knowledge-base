@@ -18,6 +18,7 @@ from akb.ingest.dedupe import dedupe_chunks
 from akb.ingest.epub_loader import load_epub
 from akb.ingest.obsidian_loader import iter_vault, load_note
 from akb.ingest.pdf_loader import load_pdf
+from akb.ingest.scrubber import scrub_chunks
 from akb.ingest.txt_loader import load_txt
 from akb.schemas import Chunk, Document, SourceType
 
@@ -67,7 +68,13 @@ def chunks_for(
     *,
     contextualize: bool | None = None,
 ) -> list[Chunk]:
-    """Chunk + (optionally contextualize) + dedupe a stream of documents.
+    """Chunk → scrub → (optionally) contextualize → dedupe.
+
+    Order matters:
+      * **Scrub before contextualize** — we don't want secrets leaking into
+        the cached situating context.
+      * **Contextualize before dedupe** — two near-duplicate chunks may carry
+        different contexts; dedupe still keys off the chunk text.
 
     ``contextualize=None`` honors the config flag (Phase 4 default: True).
     """
@@ -79,6 +86,7 @@ def chunks_for(
     all_chunks: list[Chunk] = []
     for doc in documents:
         chunks = chunk_document(doc)
+        chunks = scrub_chunks(chunks)
         if ctx is not None:
             chunks = ctx.contextualize(doc, chunks)
         all_chunks.extend(chunks)
