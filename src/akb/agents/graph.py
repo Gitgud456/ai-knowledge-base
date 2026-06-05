@@ -35,6 +35,7 @@ import ollama
 from langgraph.graph import END, START, StateGraph
 
 from akb.agents.memory import trim_history
+from akb.agents.memory_store import format_memory_block, get_memory
 from akb.agents.pinning import (
     Pinned,
     extract_mentions,
@@ -72,6 +73,9 @@ class ChatState(TypedDict, total=False):
     force_path: str           # 'retrieve' | 'web' | 'direct' (overrides router)
     cite_only: bool           # short-circuit: return citations + tiny preamble
     dry_run: bool             # stop after retrieve; surface what would be sent
+    # Filter pre-computed by callers (e.g. time-aware date range)
+    retrieval_filter: dict[str, Any]
+    time_hint: str            # human-readable description of any date filter applied
 
 
 def _route(state: ChatState) -> ChatState:
@@ -104,12 +108,23 @@ def _route(state: ChatState) -> ChatState:
 
 def _retrieve_kb(state: ChatState, *, graph: VaultGraph | None = None) -> ChatState:
     query = state.get("improved_query") or state["query"]
-    context, citations = search_knowledge_base(query, graph=graph)
+
+    # Time-aware retrieval: extract a date filter from temporal hints
+    extra_filter = state.get("retrieval_filter") if isinstance(state.get("retrieval_filter"), dict) else None
+    context, citations = search_knowledge_base(query, graph=graph, filter=extra_filter)
 
     # Prepend any pinned-note blocks the UI resolved before invoke()
     pinned_block = state.get("context", "") if state.get("pinned_titles") else ""
     if pinned_block:
         context = f"{pinned_block}\n---\n{context}" if context else pinned_block
+
+    # Sprinkle in cross-session memory — soft, fails open
+    cfg = load_settings().agent
+    if cfg.enable_memory:
+        hits = get_memory().recall(query, top_k=cfg.memory_top_k)
+        if hits:
+            mem_block = format_memory_block(hits)
+            context = f"{mem_block}\n---\n{context}" if context else mem_block
     return {**state, "context": context, "citations": citations}
 
 
@@ -351,6 +366,16 @@ class ChatAgent:
         dry_run: bool = False,
     ) -> ChatState:
         stripped, pinned_block, pinned = self._resolve_pinned(query)
+
+        # Time-aware retrieval: pull a date filter out of the prompt if the
+        # config enables it; otherwise this is a no-op (returns None).
+        retrieval_filter: dict[str, Any] | None = None
+        time_hint = ""
+        if load_settings().agent.enable_time_aware:
+            from akb.retrieve.time_filter import build_time_filter
+
+            retrieval_filter, time_hint = build_time_filter(stripped)
+
         state: ChatState = {
             "query": stripped,
             "raw_query": query,
@@ -362,6 +387,9 @@ class ChatAgent:
             # Stash the pinned block in `context` so the retrieve_kb node can
             # find it (the node prepends it when pinned_titles is non-empty).
             state["context"] = pinned_block
+        if retrieval_filter:
+            state["retrieval_filter"] = retrieval_filter
+            state["time_hint"] = time_hint
         if force_path:
             state["force_path"] = force_path
         if cite_only:
@@ -377,6 +405,7 @@ class ChatAgent:
         query: str,
         history: list[dict[str, str]] | None = None,
         *,
+        session_id: int | None = None,
         force_path: str | None = None,
         cite_only: bool = False,
         dry_run: bool = False,
@@ -386,13 +415,23 @@ class ChatAgent:
             query, history, force_path=force_path, cite_only=cite_only, dry_run=dry_run
         )
         out: ChatState = self.app.invoke(init)
-        return Answer(
+        answer = Answer(
             text=out.get("final", ""),
             citations=out.get("citations", []),
             used_tools=[out.get("path", "retrieve")],
             model=cfg.llm.local_model,
             iterations=out.get("iterations", 1),
         )
+        self._remember(session_id, query, answer)
+        return answer
+
+    def _remember(self, session_id: int | None, question: str, answer: Answer) -> None:
+        cfg = load_settings().agent
+        if not cfg.enable_memory:
+            return
+        if len(answer.text) < cfg.memory_remember_threshold:
+            return
+        get_memory().remember(session_id, question, answer.text)
 
     def stream(self, query: str, history: list[dict[str, str]] | None = None) -> Iterator[ChatState]:
         for event in self.app.stream(self._init_state(query, history)):
@@ -407,6 +446,7 @@ class ChatAgent:
         query: str,
         history: list[dict[str, str]] | None = None,
         *,
+        session_id: int | None = None,
         force_path: str | None = None,
         cite_only: bool = False,
         dry_run: bool = False,
@@ -513,13 +553,12 @@ class ChatAgent:
             yield StreamEvent(kind="token", token=f"\n[stream error: {e}]")
 
         final_text = "".join(buf).strip()
-        yield StreamEvent(
-            kind="done",
-            answer=Answer(
-                text=final_text,
-                citations=last_state.get("citations", []),
-                used_tools=[last_state.get("path", "retrieve")],
-                model=cfg.llm.local_model,
-                iterations=last_state.get("iterations", 1),
-            ),
+        answer = Answer(
+            text=final_text,
+            citations=last_state.get("citations", []),
+            used_tools=[last_state.get("path", "retrieve")],
+            model=cfg.llm.local_model,
+            iterations=last_state.get("iterations", 1),
         )
+        self._remember(session_id, query, answer)
+        yield StreamEvent(kind="done", answer=answer)

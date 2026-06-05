@@ -42,6 +42,7 @@ def retrieve(
     graph: VaultGraph | None = None,
     cfg: RetrieveConfig | None = None,
 ) -> PipelineResult:
+    """High-level retrieval entry. Composes everything from Phases 2-3."""
     cfg = cfg or load_settings().retrieve
     hybrid = HybridRetriever(cfg=cfg)
     req = RetrievalRequest(

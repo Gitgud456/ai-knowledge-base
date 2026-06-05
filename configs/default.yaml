@@ -72,6 +72,12 @@ agent:
   web_tool: duckduckgo      # 'duckduckgo' | 'tavily'
   max_critic_iterations: 1
   history_window: 8
+  # Cross-session long-term memory of past Q/A pairs.
+  enable_memory: true
+  memory_top_k: 3
+  memory_remember_threshold: 16
+  # Time-aware retrieval: temporal hints in query -> Qdrant filter on modified_at.
+  enable_time_aware: true
 
 mentor:
   initial_recall: 20

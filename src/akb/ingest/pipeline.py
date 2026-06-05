@@ -20,6 +20,8 @@ from akb.ingest.obsidian_loader import iter_vault, load_note
 from akb.ingest.pdf_loader import load_pdf
 from akb.ingest.scrubber import scrub_chunks
 from akb.ingest.txt_loader import load_txt
+from akb.ingest.web_loader import load_url
+from akb.ingest.youtube_loader import load_youtube
 from akb.schemas import Chunk, Document, SourceType
 
 
@@ -36,6 +38,18 @@ def load_single(path: Path) -> Document:
         # Treat lone .md as a 1-file mini-vault.
         return load_note(path, vault=path.parent, index={path.stem.lower(): path})
     raise ValueError(f"Unsupported extension: {suffix}")
+
+
+def load_remote(target: str) -> Document:
+    """Dispatch a URL string. YouTube URLs / video IDs route to the transcript
+    loader; everything else goes through trafilatura."""
+    from akb.ingest.youtube_loader import extract_video_id
+
+    if extract_video_id(target) is not None:
+        return load_youtube(target)
+    if target.startswith(("http://", "https://")):
+        return load_url(target)
+    raise ValueError(f"Unsupported target: {target!r}")
 
 
 def iter_documents(path: Path | None = None) -> Iterator[Document]:

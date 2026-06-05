@@ -160,6 +160,13 @@ class AgentConfig(BaseModel):
     web_tool: str = "duckduckgo"
     max_critic_iterations: int = 1
     history_window: int = 8
+    # Cross-session long-term memory.
+    enable_memory: bool = True
+    memory_top_k: int = 3
+    memory_remember_threshold: int = 16   # skip short answers (small talk)
+    # Time-aware retrieval: parse temporal hints ("last March", "this week")
+    # and add a Qdrant filter on modified_at.
+    enable_time_aware: bool = True
 
 
 class MentorConfig(BaseModel):

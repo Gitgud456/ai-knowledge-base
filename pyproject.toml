@@ -38,6 +38,12 @@ dependencies = [
   "watchfiles>=0.24",
   # web search tools
   "duckduckgo-search>=6.2",
+  # web/youtube ingest
+  "trafilatura>=1.10",
+  "yt-dlp>=2024.10",
+  "youtube-transcript-api>=0.6",
+  # time-aware retrieval
+  "dateparser>=1.2",
   # ui (kept thin)
   "streamlit>=1.38",
   "streamlit-agraph>=0.0.45",

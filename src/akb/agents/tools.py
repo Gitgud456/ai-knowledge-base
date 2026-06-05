@@ -22,9 +22,10 @@ def search_knowledge_base(
     top_k: int | None = None,
     n_results: int | None = None,
     graph: VaultGraph | None = None,
+    filter: dict | None = None,
 ) -> tuple[str, list[Citation]]:
     """Run the full hybrid+rerank pipeline. Returns (joined_context, citations)."""
-    res = retrieve(query, n_results=n_results, top_k=top_k, graph=graph)
+    res = retrieve(query, n_results=n_results, top_k=top_k, graph=graph, filter=filter)
     if not res.chunks:
         return "", []
     blocks: list[str] = []

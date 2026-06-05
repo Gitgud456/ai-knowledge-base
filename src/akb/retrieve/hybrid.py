@@ -45,10 +45,11 @@ def _client_filter(filter_payload: dict[str, Any] | None) -> Any | None:
     """Translate a small dict-style filter into a Qdrant Filter.
 
     Supports:
-        {"source_id": "..."}
-        {"source_type": "obsidian"}
-        {"tags": ["security", "ai"]}   (any-of)
-        {"wikilinks": ["Some Note"]}   (any-of)
+        {"source_id": "..."}                                    exact match
+        {"source_type": "obsidian"}                             exact match
+        {"tags": ["security", "ai"]}                            any-of
+        {"wikilinks": ["Some Note"]}                            any-of
+        {"modified_at": {"gte": "...", "lte": "..."}}           range
     """
     if not filter_payload or models is None:
         return None
@@ -57,6 +58,18 @@ def _client_filter(filter_payload: dict[str, Any] | None) -> Any | None:
         if isinstance(value, list):
             must.append(
                 models.FieldCondition(key=key, match=models.MatchAny(any=value))
+            )
+        elif isinstance(value, dict) and ("gte" in value or "lte" in value or "gt" in value or "lt" in value):
+            must.append(
+                models.FieldCondition(
+                    key=key,
+                    range=models.DatetimeRange(
+                        gte=value.get("gte"),
+                        gt=value.get("gt"),
+                        lte=value.get("lte"),
+                        lt=value.get("lt"),
+                    ),
+                )
             )
         else:
             must.append(

@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Iterator
 
 from akb.config import load_settings
+from akb.store.migrations import migrate
 
 
 @dataclass(frozen=True)
@@ -78,6 +79,7 @@ class IngestState:
                 "CREATE INDEX IF NOT EXISTS idx_chunk_index_source "
                 "ON chunk_index(source_id)"
             )
+        migrate(self._path, "ingest_state")
 
     # ---------- queries ----------
 

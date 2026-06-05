@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Iterator
 
 from akb.config import load_settings
+from akb.store.migrations import migrate
 
 
 @contextmanager
@@ -43,6 +44,7 @@ def init_history_db() -> None:
             "content TEXT, timestamp TEXT, "
             "FOREIGN KEY (session_id) REFERENCES sessions (id) ON DELETE CASCADE)"
         )
+    migrate(_db_path(), "session_history")
 
 
 def create_new_session(name: str) -> int:

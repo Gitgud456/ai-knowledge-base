@@ -296,5 +296,158 @@ def export_chat(
     console.print(f"[green]✓[/green] wrote {path}")
 
 
+@app.command()
+def summarize(
+    target: str = typer.Argument(
+        ...,
+        help="What to summarise: 'source:<id>', 'tag:<name>', 'type:<source_type>', or a bare source_id.",
+    ),
+    json_out: Path = typer.Option(None, "--json", help="Write the full report (notes + brief) as JSON."),
+) -> None:
+    """Map-reduce summarize a source or a tag-scoped slice of the vault."""
+    from akb.agents.summarize import summarize_dispatch
+
+    with console.status(f"[cyan]Summarising {target}…[/cyan]"):
+        res = summarize_dispatch(target)
+    console.print(f"\n[bold]Scope:[/bold] {res.scope}\n")
+    console.print(res.text)
+    console.print(f"\n[dim]{len(res.chunks)} chunk(s) consumed[/dim]")
+    if json_out:
+        import json as _json
+
+        payload = {
+            "scope": res.scope,
+            "model": res.model,
+            "text": res.text,
+            "map_notes": res.map_notes,
+            "n_chunks": len(res.chunks),
+        }
+        json_out.parent.mkdir(parents=True, exist_ok=True)
+        json_out.write_text(_json.dumps(payload, indent=2), encoding="utf-8")
+        console.print(f"[green]✓[/green] wrote {json_out}")
+
+
+@app.command(name="ingest-url")
+def ingest_url(
+    url: str = typer.Argument(..., help="Article URL (HTML)."),
+) -> None:
+    """Ingest a single web URL via trafilatura."""
+    from akb.ingest.pipeline import chunks_for
+    from akb.ingest.upsert import upsert_chunks
+    from akb.ingest.web_loader import load_url
+
+    with console.status(f"[cyan]Fetching {url}…[/cyan]"):
+        doc = load_url(url)
+    console.print(f"[green]✓[/green] {doc.title}")
+    with console.status("[cyan]Chunking + embedding + upserting…[/cyan]"):
+        chunks = chunks_for([doc])
+        n = upsert_chunks(chunks)
+    console.print(f"[green]✓[/green] {n} chunks upserted")
+
+
+@app.command(name="ingest-youtube")
+def ingest_youtube(
+    target: str = typer.Argument(..., help="YouTube URL or 11-character video id."),
+) -> None:
+    """Ingest a YouTube video's transcript."""
+    from akb.ingest.pipeline import chunks_for
+    from akb.ingest.upsert import upsert_chunks
+    from akb.ingest.youtube_loader import load_youtube
+
+    with console.status(f"[cyan]Fetching transcript for {target}…[/cyan]"):
+        doc = load_youtube(target)
+    console.print(f"[green]✓[/green] {doc.title}")
+    with console.status("[cyan]Chunking + embedding + upserting…[/cyan]"):
+        chunks = chunks_for([doc])
+        n = upsert_chunks(chunks)
+    console.print(f"[green]✓[/green] {n} chunks upserted")
+
+
+@app.command()
+def backup(
+    out_dir: Path = typer.Option(None, "--out", help="Override backup directory."),
+) -> None:
+    """Tar+gzip the data/ directory (Qdrant + SQLite + caches)."""
+    from akb.ops.backup import backup as do_backup
+
+    info = do_backup(out_dir=out_dir)
+    console.print(
+        f"[green]✓[/green] {info.path}  ({info.size_bytes / (1024 * 1024):.1f} MB)"
+    )
+
+
+@app.command()
+def restore(
+    archive: Path = typer.Argument(..., exists=True, help="Path to a .tar.gz backup archive."),
+    yes: bool = typer.Option(False, "--yes", help="Skip confirmation."),
+) -> None:
+    """Restore data/ from a backup archive. The live data dir is moved aside."""
+    from akb.ops.backup import restore as do_restore
+
+    if not yes:
+        confirm = typer.confirm("This will replace the live data/ directory. Continue?")
+        if not confirm:
+            raise typer.Abort()
+    aside = do_restore(archive)
+    console.print(f"[green]✓[/green] restored from {archive}; previous data at {aside}")
+
+
+schedule_app = typer.Typer(help="Manage scheduled queries.")
+app.add_typer(schedule_app, name="schedule")
+
+
+@schedule_app.command("add")
+def schedule_add(
+    name: str = typer.Option(..., "--name", help="Unique handle."),
+    cron: str = typer.Option(..., "--cron", help="Cron expression (5 fields)."),
+    query: str = typer.Option(..., "--query"),
+    out: str = typer.Option(..., "--out", help="Output markdown file (vault-relative or absolute)."),
+) -> None:
+    """Add a recurring query."""
+    from akb.ops.schedules import add as do_add
+
+    s = do_add(name=name, cron=cron, query=query, out_path=out)
+    console.print(f"[green]✓[/green] schedule #{s.id} added")
+
+
+@schedule_app.command("list")
+def schedule_list() -> None:
+    from akb.ops.schedules import list_all
+
+    items = list_all()
+    if not items:
+        console.print("[dim]no schedules.[/dim]")
+        return
+    t = Table(title="schedules")
+    t.add_column("id", style="cyan")
+    t.add_column("name")
+    t.add_column("cron")
+    t.add_column("query")
+    t.add_column("out")
+    t.add_column("last run")
+    for s in items:
+        t.add_row(str(s.id), s.name, s.cron, s.query[:40], s.out_path, s.last_run or "—")
+    console.print(t)
+
+
+@schedule_app.command("delete")
+def schedule_delete(name_or_id: str = typer.Argument(...)) -> None:
+    from akb.ops.schedules import delete
+
+    if delete(name_or_id):
+        console.print("[green]✓[/green] removed")
+    else:
+        console.print(f"[yellow]no schedule matched {name_or_id!r}[/yellow]")
+
+
+@schedule_app.command("run")
+def schedule_run() -> None:
+    """Run every schedule that's currently due, then exit. Wire to OS cron."""
+    from akb.ops.schedules import run_due
+
+    res = run_due()
+    console.print(f"[green]✓[/green] ran {res['ran']}, skipped {res['skipped']}")
+
+
 if __name__ == "__main__":
     app()

@@ -180,6 +180,7 @@ class QdrantStore:
 
     def _ensure_collection(self) -> None:
         if self._client.collection_exists(COLLECTION):
+            self._check_index_stamp()
             return
         kwargs: dict[str, Any] = {
             "collection_name": COLLECTION,
@@ -191,11 +192,37 @@ class QdrantStore:
         if self._embed_cfg.use_sparse:
             kwargs["sparse_vectors_config"] = _sparse_vectors_config()
         self._client.create_collection(**kwargs)
+        self._check_index_stamp()
+
+    def _check_index_stamp(self) -> None:
+        """Verify the live index was built with the same embed model + dim + quant.
+
+        On first run, writes the stamp through. On a mismatch, logs an error
+        and raises :class:`IndexCompatibilityError` — the caller should run
+        ``akb reindex`` (or revert the config).
+        """
+        from akb.store.migrations import check_index_compatible
+
+        res = check_index_compatible(self._client, self._embed_cfg)
+        if not res.compatible:
+            from akb.obs.logging import get_logger
+
+            _log = get_logger(__name__)
+            _log.error("index.stamp.mismatch", reason=res.reason)
+            raise IndexCompatibilityError(res.reason)
 
     def recreate(self) -> None:
-        """Drop and re-create the collection. Destructive."""
+        """Drop and re-create the collection. Destructive.
+
+        Also wipes the index stamp so the next start writes a fresh one for
+        the new embed model / dim / quant.
+        """
+        from akb.store.migrations import INDEX_META_COLLECTION
+
         if self._client.collection_exists(COLLECTION):
             self._client.delete_collection(COLLECTION)
+        if self._client.collection_exists(INDEX_META_COLLECTION):
+            self._client.delete_collection(INDEX_META_COLLECTION)
         self._ensure_collection()
         _ensure_payload_indices(self._client)
 
@@ -340,6 +367,12 @@ class QdrantStore:
                 if offset is None:
                     break
         return out
+
+
+class IndexCompatibilityError(RuntimeError):
+    """Raised when the live Qdrant index was built with a different embed
+    model, dim, or quantization setting than the active config. Run
+    ``akb reindex`` (or revert the config) to recover."""
 
 
 _SINGLETON: QdrantStore | None = None
