@@ -32,7 +32,9 @@ def test_finds_github_token() -> None:
 
 
 def test_finds_google_api_key() -> None:
-    hits = find_secrets("GOOGLE_API_KEY=AIzaSyCuyUDyjGxMBhAicD4WZBxwnkXX8aCBpUE done")
+    # Synthetic key matching the regex pattern (AIza + 35 chars). NOT a real key.
+    fake = "AIza" + "X" * 35
+    hits = find_secrets(f"GOOGLE_API_KEY={fake} done")
     assert any(h.name == "google_api_key" for h in hits)
 
 
