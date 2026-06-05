@@ -31,6 +31,7 @@ sparse prefetch — keeps fusion server-side and avoids client-side reshuffling.
 
 from __future__ import annotations
 
+import threading
 import uuid
 from collections.abc import Iterable
 from pathlib import Path
@@ -69,8 +70,9 @@ def _sparse_vectors_config() -> dict[str, models.SparseVectorParams]:
 
 
 def _point_id(chunk_id: str) -> str:
-    # Qdrant accepts UUIDs and unsigned ints. Hash chunk_id into a deterministic UUID
-    # so re-upserting the same chunk overwrites in place.
+    # Qdrant accepts UUIDs and unsigned ints. uuid5 over a deterministic chunk_id
+    # (see schemas.Chunk._ensure_deterministic_id) gives us idempotent upserts —
+    # re-running `akb ingest` on an unchanged file does not duplicate points.
     return str(uuid.uuid5(uuid.NAMESPACE_URL, chunk_id))
 
 
@@ -259,12 +261,11 @@ class QdrantStore:
                 )
             )
 
-        # rrf_k is encoded server-side; we forward via params if available, else default.
-        _ = rrf_k
+        fusion_query = _build_fusion_query(rrf_k)
         res = self._client.query_points(
             collection_name=COLLECTION,
             prefetch=prefetch,
-            query=models.FusionQuery(fusion=models.Fusion.RRF),
+            query=fusion_query,
             limit=n_results,
             with_payload=True,
         )
@@ -305,19 +306,43 @@ class QdrantStore:
         return out
 
 
-def get_store() -> QdrantStore:
-    """Process-level singleton."""
-    return _qdrant_singleton()
-
-
-def _qdrant_singleton() -> QdrantStore:
-    global _SINGLETON
-    if "_SINGLETON" not in globals() or _SINGLETON is None:
-        globals()["_SINGLETON"] = QdrantStore()
-    return globals()["_SINGLETON"]
-
-
 _SINGLETON: QdrantStore | None = None
+_SINGLETON_LOCK = threading.Lock()
+
+
+def _build_fusion_query(rrf_k: int) -> Any:
+    """Build a FusionQuery, passing ``params`` if the installed qdrant-client supports it.
+
+    Older clients (<1.12) don't expose ``FusionParams``; in that case fall back to the
+    default ``k`` (which is also 60, matching our config default — but a non-60 value
+    in config would silently no-op on old clients).
+    """
+    params_cls = getattr(models, "FusionParams", None)
+    if params_cls is not None:
+        try:
+            return models.FusionQuery(fusion=models.Fusion.RRF, params=params_cls(k=rrf_k))
+        except Exception:
+            pass
+    return models.FusionQuery(fusion=models.Fusion.RRF)
+
+
+def get_store() -> QdrantStore:
+    """Process-level singleton. Thread-safe: embedded Qdrant locks its data dir,
+    so two concurrent inits (Streamlit + ``akb sync --watch`` sharing a process)
+    would crash on the second. Lock guarantees one init."""
+    global _SINGLETON
+    if _SINGLETON is None:
+        with _SINGLETON_LOCK:
+            if _SINGLETON is None:
+                _SINGLETON = QdrantStore()
+    return _SINGLETON
+
+
+def reset_store_singleton() -> None:
+    """Drop the cached store — useful in tests."""
+    global _SINGLETON
+    with _SINGLETON_LOCK:
+        _SINGLETON = None
 
 
 __all__ = [

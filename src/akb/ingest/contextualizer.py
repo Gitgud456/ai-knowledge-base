@@ -30,7 +30,10 @@ from typing import Iterator
 import ollama
 
 from akb.config import IngestConfig, LLMConfig, load_settings
+from akb.obs.logging import get_logger
 from akb.schemas import Chunk, Document
+
+log = get_logger(__name__)
 
 _PROMPT = """<document>
 {document}
@@ -48,8 +51,10 @@ Please give a short, succinct context (1-2 sentences, max 100 tokens) to situate
 @contextmanager
 def _cache_conn(path: Path) -> Iterator[sqlite3.Connection]:
     path.parent.mkdir(parents=True, exist_ok=True)
-    c = sqlite3.connect(path)
+    c = sqlite3.connect(path, isolation_level=None)  # autocommit; callers commit per row
     try:
+        c.execute("PRAGMA journal_mode=WAL")
+        c.execute("PRAGMA synchronous=NORMAL")
         c.execute(
             "CREATE TABLE IF NOT EXISTS context_cache ("
             "key TEXT PRIMARY KEY, "
@@ -57,7 +62,6 @@ def _cache_conn(path: Path) -> Iterator[sqlite3.Connection]:
             "created_at TEXT NOT NULL)"
         )
         yield c
-        c.commit()
     finally:
         c.close()
 
@@ -112,12 +116,19 @@ class Contextualizer:
         document: Document,
         chunks: list[Chunk],
     ) -> list[Chunk]:
-        """Mutates chunks to set ``contextualized_text = context + '\\n\\n' + text``."""
+        """Mutates chunks to set ``contextualized_text = context + '\\n\\n' + text``.
+
+        Each cache row is committed individually (autocommit + per-row INSERT) so a
+        Ctrl-C halfway through a long document does not lose all generated contexts
+        for that doc — the next run picks up where this one stopped.
+        """
         if not chunks or not self._ingest.contextual_retrieval:
             return chunks
 
         doc_hash = document.content_hash
         document_text = document.content
+        hits = 0
+        misses = 0
 
         with _cache_conn(self._cache_path) as conn:
             for chunk in chunks:
@@ -127,15 +138,21 @@ class Contextualizer:
                 ).fetchone()
                 if row is not None:
                     context = row[0]
+                    hits += 1
                 else:
                     context = self._generate(document_text, chunk.text)
+                    misses += 1
                     if context:
+                        # autocommit mode: this INSERT durably persists immediately
                         conn.execute(
                             "INSERT OR REPLACE INTO context_cache (key, context, created_at) VALUES (?, ?, ?)",
                             (key, context, datetime.now().isoformat()),
                         )
                 if context:
                     chunk.contextualized_text = f"{context}\n\n{chunk.text}"
+        log.info(
+            "contextualize.done", source_id=document.source_id, hits=hits, misses=misses
+        )
         return chunks
 
     def stats(self) -> dict[str, int]:

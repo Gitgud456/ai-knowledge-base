@@ -46,21 +46,29 @@ def search_knowledge_base(
 
 
 def search_web(query: str) -> str:
+    """Web search tool. Returns "" on any failure — error strings must never leak
+    into the LLM context. Failures are logged for operator visibility."""
+    from akb.obs.logging import get_logger
+
+    log = get_logger(__name__)
     cfg = load_settings().agent
     if cfg.web_tool == "tavily":
         try:
-            from tavily import TavilyClient  # type: ignore[import-not-found]
             import os
+
+            from tavily import TavilyClient  # type: ignore[import-not-found]
 
             key = os.getenv("TAVILY_API_KEY")
             if not key:
+                log.warning("tools.tavily.no_key")
                 return ""
             client = TavilyClient(api_key=key)
             res = client.search(query=query, max_results=5)
             results = res.get("results", [])
             return "\n---\n".join(r.get("content", "") for r in results)
         except Exception as e:
-            return f"[tavily error: {e}]"
+            log.warning("tools.tavily.error", error=str(e))
+            return ""
     try:
         from duckduckgo_search import DDGS
 
@@ -68,4 +76,5 @@ def search_web(query: str) -> str:
             results = [r.get("body", "") for r in ddgs.text(query, max_results=5)]
         return "\n---\n".join(filter(None, results))
     except Exception as e:
-        return f"[ddg error: {e}]"
+        log.warning("tools.ddg.error", error=str(e))
+        return ""

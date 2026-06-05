@@ -51,7 +51,9 @@ class VaultGraph:
 
 
 def _norm_title(s: str) -> str:
-    return s.strip().lower()
+    import unicodedata
+
+    return unicodedata.normalize("NFC", s.strip()).casefold()
 
 
 def build_graph(documents: Iterable[Document]) -> VaultGraph:

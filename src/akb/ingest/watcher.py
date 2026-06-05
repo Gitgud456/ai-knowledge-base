@@ -43,20 +43,19 @@ async def watch_vault(
         affected: set[Path] = set()
         for change, path_str in changes:
             p = Path(path_str)
-            if _is_vault_md(p, vault, skip):
+            if _is_vault_md(p, vault, skip) or change is Change.deleted:
                 affected.add(p)
-            if change is Change.deleted:
-                affected.add(p)  # plan_sync's set-diff handles the rest
         if not affected:
             continue
-        # Targeted plan: we still ask plan_sync to compute deletes by full diff
-        # (cheap — it only scans paths, not contents) but limit added/changed
-        # to the watched batch.
-        full = plan_sync(vault=vault)
-        full.added = [p for p in full.added if p in affected]
-        full.changed = [p for p in full.changed if p in affected]
-        # Deletes always come from the full diff; partial info is unsafe.
-        result = apply_sync(full, vault=vault)
+        # Targeted plan: inspect only the touched paths. plan_sync handles a
+        # passed path that no longer exists by promoting it to a delete.
+        # Note: this means a delete-on-watcher-restart of a file we already
+        # know about won't be detected until the next full `akb sync` — but
+        # that's the right perf trade-off for huge vaults.
+        plan = plan_sync(vault=vault, restrict_paths=list(affected))
+        if plan.total() == 0:
+            continue
+        result = apply_sync(plan, vault=vault)
         yield result
 
 

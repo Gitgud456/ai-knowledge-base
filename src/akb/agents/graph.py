@@ -33,8 +33,11 @@ from akb.agents.memory import trim_history
 from akb.agents.tools import search_knowledge_base, search_web
 from akb.config import load_settings
 from akb.ingest.graph import VaultGraph
+from akb.obs.logging import get_logger
 from akb.prompts.chat import CRITIC__V1, DIRECT__V1, DRAFT__V1, FINAL__V1, ROUTER__V1
 from akb.schemas import Answer, Citation
+
+log = get_logger(__name__)
 
 
 class ChatState(TypedDict, total=False):
@@ -68,8 +71,10 @@ def _route(state: ChatState) -> ChatState:
         path = data.get("path", "retrieve")
         if path not in {"retrieve", "web", "direct"}:
             path = "retrieve"
-    except Exception:
+    except Exception as e:
+        log.warning("agent.route.fallback", error=str(e))
         path = "retrieve"
+    log.info("agent.route", path=path)
     return {**state, "path": path}
 
 
@@ -127,6 +132,7 @@ def _critic(state: ChatState) -> ChatState:
     except Exception:
         verdict, notes, improved = "good", "", state["query"]
     iterations = state.get("iterations", 0) + 1
+    log.info("agent.critic", verdict=verdict, iterations=iterations)
     return {
         **state,
         "critic_verdict": verdict,
@@ -174,11 +180,18 @@ def _route_from_router(state: ChatState) -> str:
 
 
 def _route_from_critic(state: ChatState) -> str:
+    """Decide whether to revise (re-retrieve with improved_query) or finalize.
+
+    Bound semantics: ``max_critic_iterations`` is the count of *revise* loops we
+    allow. With the default (1), the path is at most:
+      retrieve → draft → critic("revise") → retrieve → draft → critic → finalize
+    i.e. one revise. ``max_critic_iterations=0`` short-circuits any revise.
+    """
     cfg = load_settings().agent
     verdict = state.get("critic_verdict", "good")
     if verdict == "good":
         return "finalize"
-    if state.get("iterations", 0) >= max(1, cfg.max_critic_iterations + 1):
+    if state.get("iterations", 0) > cfg.max_critic_iterations:
         return "finalize"
     return "retrieve_again"
 

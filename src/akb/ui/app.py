@@ -157,6 +157,7 @@ with tab_mentor:
                 for chunk in stream:
                     buf += chunk
             ms.plan = parse_plan(buf)
+            ms.commit_reply(buf)  # keep history so the next turn has continuity
             ss.mentor_state = ms
             add_message_to_session(ss.mentor_session_id, "user", f"Master: {topic}")
             add_message_to_session(ss.mentor_session_id, "assistant", buf)
@@ -182,7 +183,7 @@ with tab_mentor:
                         buf += chunk
                         placeholder.markdown(buf + "▌")
                     placeholder.markdown(buf)
-            ss.mentor_state = new_state
+            ss.mentor_state = new_state.commit_reply(buf)
             add_message_to_session(ss.mentor_session_id, "assistant", buf)
             st.rerun()
 

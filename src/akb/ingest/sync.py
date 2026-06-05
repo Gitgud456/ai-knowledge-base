@@ -28,9 +28,12 @@ from akb.ingest.contextualizer import Contextualizer
 from akb.ingest.dedupe import dedupe_chunks
 from akb.ingest.obsidian_loader import _build_index, load_note  # internal but stable
 from akb.ingest.upsert import upsert_chunks
+from akb.obs.logging import get_logger
 from akb.schemas import Document
 from akb.store.qdrant_store import QdrantStore, get_store
 from akb.store.sqlite_state import IngestState
+
+log = get_logger(__name__)
 
 
 @dataclass
@@ -59,19 +62,40 @@ def _doc_for_path(path: Path, vault: Path, index: dict[str, Path]) -> Document:
 def plan_sync(
     vault: Path | None = None,
     state: IngestState | None = None,
+    *,
+    restrict_paths: list[Path] | None = None,
 ) -> SyncPlan:
+    """Compute a sync plan.
+
+    Default (``restrict_paths=None``) walks the whole vault and produces a
+    full add/change/delete plan. Pass ``restrict_paths`` to limit add/change
+    inspection to just those paths — the watcher uses this so a single
+    save doesn't trigger a 50k-file rescan. In restricted mode, deletes are
+    inferred only for the passed paths (i.e. a passed path that no longer
+    exists on disk). For a full delete sweep, run with ``restrict_paths=None``.
+    """
     settings = load_settings()
     vault = vault or settings.paths.vault
     state = state or IngestState()
     skip = {d.lower() for d in settings.ingest.skip_dirs}
 
-    on_disk = _walk_vault(vault, skip)
+    if restrict_paths is None:
+        candidates = _walk_vault(vault, skip)
+        full_sweep = True
+    else:
+        candidates = [p for p in restrict_paths if p.suffix.lower() == ".md"]
+        full_sweep = False
     index = _build_index(vault, settings.ingest)
 
     plan = SyncPlan()
     seen_source_ids: set[str] = set()
 
-    for path in on_disk:
+    for path in candidates:
+        if not path.exists():
+            # In restricted mode, a passed path that's gone becomes a delete.
+            rel = path.relative_to(vault) if path.is_relative_to(vault) else path
+            plan.deleted.append(f"obsidian:{rel.as_posix()}")
+            continue
         rel = path.relative_to(vault) if path.is_relative_to(vault) else path
         source_id = f"obsidian:{rel.as_posix()}"
         seen_source_ids.add(source_id)
@@ -79,15 +103,24 @@ def plan_sync(
         if existing is None:
             plan.added.append(path)
             continue
-        # Cheap mtime gate first; only hash on suspicion.
         new_hash = _doc_for_path(path, vault, index).content_hash
         if new_hash != existing.content_hash:
             plan.changed.append(path)
         else:
             state.touch(source_id)
 
-    known = state.all_source_ids()
-    plan.deleted = sorted(known - seen_source_ids)
+    if full_sweep:
+        known = state.all_source_ids()
+        plan.deleted = sorted(known - seen_source_ids)
+    else:
+        plan.deleted = sorted(set(plan.deleted))
+    log.info(
+        "sync.plan",
+        added=len(plan.added),
+        changed=len(plan.changed),
+        deleted=len(plan.deleted),
+        mode="full" if full_sweep else "restricted",
+    )
     return plan
 
 
@@ -114,6 +147,7 @@ def apply_sync(
         store.delete_by_source(sid)
         state.delete_source(sid)
         deletes += 1
+        log.info("sync.delete", source_id=sid)
 
     for path in [*plan.added, *plan.changed]:
         rel = path.relative_to(vault) if path.is_relative_to(vault) else path
@@ -128,6 +162,15 @@ def apply_sync(
             chunks = ctx.contextualize(doc, chunks)
         chunks = dedupe_chunks(chunks)
         if not chunks:
+            # Source produced zero chunks (empty note, all-frontmatter, deduped
+            # against itself). Record the hash anyway so the next plan_sync
+            # doesn't keep re-enqueuing this file as "changed".
+            state.upsert_source(
+                source_id=doc.source_id,
+                path=str(path),
+                content_hash=doc.content_hash,
+                chunk_ids=[],
+            )
             continue
 
         n = upsert_chunks(chunks, store=store)
@@ -138,9 +181,11 @@ def apply_sync(
             chunk_ids=[c.chunk_id for c in chunks],
         )
         upserts += n
+        log.info("sync.upsert", source_id=doc.source_id, chunks=n)
         if callable(on_progress):
             on_progress(path, n)  # type: ignore[misc]
 
+    log.info("sync.done", upserts=upserts, deletes=deletes)
     return {"upserts": upserts, "deletes": deletes}
 
 

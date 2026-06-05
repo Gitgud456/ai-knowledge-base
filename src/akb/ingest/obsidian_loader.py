@@ -15,6 +15,7 @@ match the literal string.
 from __future__ import annotations
 
 import re
+import unicodedata
 from datetime import datetime
 from pathlib import Path
 from typing import Iterator
@@ -65,18 +66,28 @@ def _normalise_aliases(raw: object) -> list[str]:
     return []
 
 
+def _norm_key(s: str) -> str:
+    """Unicode-safe normalisation for title/link matching.
+
+    Uses NFC normalisation (Mac filesystems return NFD) and ``casefold`` (full
+    Unicode case folding — ``Straße`` matches ``strasse``). Plain ``.lower()``
+    would miss both.
+    """
+    return unicodedata.normalize("NFC", s).casefold()
+
+
 def _build_index(vault: Path, cfg: IngestConfig) -> dict[str, Path]:
     """Map normalised target name -> resolved path. Case-insensitive by basename.
 
     Obsidian's default link mode is "shortest path when possible" — we approximate
     that with basename matching, which covers ~all personal vaults.
     """
-    skip = {d.lower() for d in cfg.skip_dirs}
+    skip = {_norm_key(d) for d in cfg.skip_dirs}
     idx: dict[str, Path] = {}
     for md in vault.rglob("*.md"):
-        if any(part.lower() in skip for part in md.parts):
+        if any(_norm_key(part) in skip for part in md.parts):
             continue
-        idx.setdefault(md.stem.lower(), md)
+        idx.setdefault(_norm_key(md.stem), md)
     return idx
 
 
@@ -104,7 +115,7 @@ def _expand_embeds(
 
     def repl(m: re.Match[str]) -> str:
         target, _head, _alias = _split_link(m.group(1))
-        resolved = index.get(target.lower())
+        resolved = index.get(_norm_key(target))
         if not resolved or resolved in seen:
             return m.group(0)
         try:
@@ -172,11 +183,11 @@ def iter_vault(vault: Path | None = None, cfg: IngestConfig | None = None) -> It
     settings = load_settings()
     vault = vault or settings.paths.vault
     cfg = cfg or settings.ingest
-    skip = {d.lower() for d in cfg.skip_dirs}
+    skip = {_norm_key(d) for d in cfg.skip_dirs}
 
     index = _build_index(vault, cfg)
     for md in vault.rglob("*.md"):
-        if any(part.lower() in skip for part in md.parts):
+        if any(_norm_key(part) in skip for part in md.parts):
             continue
         yield load_note(md, vault, index)
 

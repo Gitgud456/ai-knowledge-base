@@ -11,9 +11,8 @@ from datetime import datetime
 from enum import Enum
 from pathlib import Path
 from typing import Any
-from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class SourceType(str, Enum):
@@ -49,11 +48,17 @@ class Document(BaseModel):
 
 
 class Chunk(BaseModel):
-    """A single retrieval unit. One Document → many Chunks."""
+    """A single retrieval unit. One Document → many Chunks.
+
+    ``chunk_id`` is **deterministic** by default: ``{source_id}::{chunk_index}::{sha16(text)}``.
+    Re-creating a Chunk with the same source, position, and text yields the same id —
+    crucial for idempotent upserts into Qdrant (without this, ``akb ingest`` on an
+    already-indexed file silently duplicated every chunk).
+    """
 
     model_config = ConfigDict(frozen=False)
 
-    chunk_id: str = Field(default_factory=lambda: uuid4().hex)
+    chunk_id: str = ""
     source_id: str
     source_type: SourceType
     text: str
@@ -68,6 +73,20 @@ class Chunk(BaseModel):
     tags: list[str] = Field(default_factory=list)
     wikilinks: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _ensure_deterministic_id(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        if data.get("chunk_id"):
+            return data
+        source_id = str(data.get("source_id", ""))
+        idx = int(data.get("chunk_index", 0))
+        text = str(data.get("text", ""))
+        digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+        data["chunk_id"] = f"{source_id}::{idx}::{digest}"
+        return data
 
     @property
     def embed_text(self) -> str:

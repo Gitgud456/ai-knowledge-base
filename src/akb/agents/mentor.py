@@ -35,6 +35,19 @@ class MentorState:
         if self.history is None:
             self.history = []
 
+    def commit_reply(self, full_text: str) -> "MentorState":
+        """Append the assistant's just-emitted reply to history and return self.
+
+        ``start_session`` / ``continue_session`` return a state whose history
+        ends on the user turn (because the assistant reply is still streaming
+        out). Callers MUST invoke this after fully consuming the stream so the
+        next turn has conversational continuity. Without it the model only sees
+        a sequence of user messages.
+        """
+        if full_text:
+            self.history.append({"role": "assistant", "content": full_text})
+        return self
+
 
 _PLAN_RX = re.compile(r"LEARNING PLAN:(.*?)(?:\n\n|$)", re.DOTALL | re.IGNORECASE)
 _ITEM_RX = re.compile(r"^\s*\d+\.\s*(.+)$", re.MULTILINE)

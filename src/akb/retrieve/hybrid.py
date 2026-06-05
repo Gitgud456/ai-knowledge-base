@@ -14,11 +14,16 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
+import time
+
 from akb.config import RetrieveConfig, load_settings
 from akb.embed.providers import get_embedder
+from akb.obs.logging import get_logger
 from akb.retrieve.query_transform import expand
 from akb.schemas import RetrievedChunk
 from akb.store.qdrant_store import QdrantStore, get_store
+
+log = get_logger(__name__)
 
 try:  # Qdrant filter models are only available with the package installed.
     from qdrant_client import models  # type: ignore[import-untyped]
@@ -104,6 +109,7 @@ class HybridRetriever:
 
     def retrieve(self, req: RetrievalRequest) -> list[RetrievedChunk]:
         n_results, top_k = self._resolved(req)
+        t0 = time.perf_counter()
         sub_queries = expand(req.query, use_hyde=req.use_hyde, use_decomp=req.use_decomp)
         flt = _client_filter(req.filter)
 
@@ -122,4 +128,11 @@ class HybridRetriever:
             per_query.append(hits)
 
         merged = _rrf_merge(per_query, k=self._cfg.rrf_k)
+        log.info(
+            "retrieve.hybrid",
+            sub_queries=len(sub_queries),
+            candidates=len(merged),
+            elapsed_ms=int((time.perf_counter() - t0) * 1000),
+            has_filter=bool(flt),
+        )
         return merged[:max(n_results, top_k)]

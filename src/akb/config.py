@@ -70,6 +70,22 @@ class PathsConfig(BaseModel):
     def _to_path(cls, v: Any) -> Path:
         return Path(v) if not isinstance(v, Path) else v
 
+    @field_validator(
+        "data_dir", "qdrant_dir", "bm25_dir", "session_db", "ingest_state_db", "prompts_dir",
+        mode="after",
+    )
+    @classmethod
+    def _resolve_against_repo(cls, v: Path) -> Path:
+        """Anchor relative paths to the repo root, not the CWD.
+
+        Without this, running ``akb`` from a different working directory silently
+        creates a new index in that cwd instead of reusing the existing one.
+        Absolute paths pass through unchanged.
+        """
+        if v.is_absolute():
+            return v
+        return (REPO_ROOT / v).resolve()
+
 
 class LLMConfig(BaseModel):
     local_model: str = "llama3:8b-instruct-q4_K_M"
